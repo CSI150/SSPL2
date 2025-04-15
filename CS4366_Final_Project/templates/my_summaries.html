@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Summaries</title>
+    <link rel="stylesheet" href="CSS Files/my_summaries-styles.css">
+</head>
+<body>
+    <div class="sum_main">
+        <h1>My Summaries</h1>
+        <div class="sum_table">
+            <ul>
+                {% for summary in summaries %}
+                  <li>{{ summary }}</li>
+                {% endfor %}
+              </ul>
+        </div>
+    </div>
+</body>
