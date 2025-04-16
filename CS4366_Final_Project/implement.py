@@ -1,89 +1,104 @@
-from flask import Flask, render_template, request, redirect, url_for, jsonify
+from flask import Flask, render_template, request, redirect, url_for, send_from_directory, jsonify
 import os
-import uuid
-import json
-from datetime import datetime
+import shutil
 import threading
-from final import generate_summary  # ✅ Import the real summary function
+import final
 
-app = Flask(__name__, static_url_path='/static')
-
-# Configurations
-UPLOAD_FOLDER = 'uploads'
-SUMMARY_FOLDER = 'summaries'
+app = Flask(__name__)
+UPLOAD_FOLDER = os.path.join(os.getcwd(), 'papers')
+UPLOAD_SESSION_FOLDER = os.path.join(os.getcwd(), 'uploaded_files')
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['SUMMARY_FOLDER'] = SUMMARY_FOLDER
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(SUMMARY_FOLDER, exist_ok=True)
 
-SUMMARY_DB = os.path.join(SUMMARY_FOLDER, 'summaries.json')
-if not os.path.exists(SUMMARY_DB):
-    with open(SUMMARY_DB, 'w') as f:
-        json.dump({}, f)
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+if not os.path.exists(UPLOAD_SESSION_FOLDER):
+    os.makedirs(UPLOAD_SESSION_FOLDER)
 
-def load_summaries():
-    with open(SUMMARY_DB, 'r') as f:
-        return json.load(f)
-
-def save_summaries(data):
-    with open(SUMMARY_DB, 'w') as f:
-        json.dump(data, f)
-
-def cleanup_old_summaries():
-    data = load_summaries()
-    now = datetime.now().timestamp()
-    data = {k: v for k, v in data.items() if now - v['timestamp'] <= 86400}  # 24 hours
-    save_summaries(data)
-
-def background_summary(file_id, filepath):
-    summary = generate_summary(filepath)  # ✅ Real processing from final.py
-    data = load_summaries()
-    data[file_id] = {
-        'summary': summary,
-        'timestamp': datetime.now().timestamp()
-    }
-    save_summaries(data)
+summary_status = {'done': False}
 
 @app.route('/')
-def main():
-    return render_template('main.html')
-
-@app.route('/upload', methods=['GET', 'POST'])
-def upload():
-    if request.method == 'POST':
-        file = request.files.get('file')
-        if file:
-            file_id = str(uuid.uuid4())
-            filename = file_id + '_' + file.filename
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(filepath)
-            threading.Thread(target=background_summary, args=(file_id, filepath)).start()
-            return redirect(url_for('processing', file_id=file_id))
+def index():
     return render_template('file_upload.html')
 
-@app.route('/processing/<file_id>')
-def processing(file_id):
-    return render_template('processing.html', file_id=file_id)
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    if 'file' not in request.files:
+        return 'No file part', 400
+    file = request.files['file']
+    if file.filename == '':
+        return 'No selected file', 400
+    if file:
+        filename = file.filename
+        file.save(os.path.join(UPLOAD_SESSION_FOLDER, filename))
+        return 'File uploaded successfully', 200
+    return 'Invalid file type', 400
 
-@app.route('/check_summary/<file_id>')
-def check_summary(file_id):
-    data = load_summaries()
-    if file_id in data:
-        return jsonify({'done': True})
-    return jsonify({'done': False})
+@app.route('/process')
+def processing():
+    return render_template('processing.html')
 
-@app.route('/completed/<file_id>')
-def completed(file_id):
-    data = load_summaries()
-    summary = data.get(file_id, {}).get('summary', 'Summary not found.')
-    return render_template('completed.html', summary=summary)
+@app.route('/start_summary', methods=['POST'])
+def start_summary():
+    summary_status['done'] = False
 
-@app.route('/summaries')
-def summaries():
-    cleanup_old_summaries()
-    data = load_summaries()
-    summaries_list = [v['summary'] for v in data.values()]
-    return render_template('my_summaries.html', summaries=summaries_list)
+    def run_summary():
+        # Clear old files
+        for filename in os.listdir(UPLOAD_FOLDER):
+            file_path = os.path.join(UPLOAD_FOLDER, filename)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+
+        # Copy files from session folder to papers
+        if os.path.exists(UPLOAD_SESSION_FOLDER):
+            for filename in os.listdir(UPLOAD_SESSION_FOLDER):
+                src = os.path.join(UPLOAD_SESSION_FOLDER, filename)
+                dest = os.path.join(UPLOAD_FOLDER, filename)
+                shutil.copy2(src, dest)
+
+        # Run summary
+        final.main()
+        summary_status['done'] = True
+
+    threading.Thread(target=run_summary).start()
+    return redirect(url_for('processing'))
+
+@app.route('/check_status')
+def check_status():
+    return jsonify({'done': summary_status['done']})
+
+@app.route('/completed')
+def completed():
+    summary_text = ""
+    try:
+        with open("summaries.txt", "r", encoding="utf-8") as f:
+            summary_text = f.read()
+    except FileNotFoundError:
+        summary_text = "No summaries found."
+    return render_template('completed.html', summary=summary_text)
+
+@app.route('/my_summaries')
+def my_summaries():
+    summaries = []
+    try:
+        with open("summaries.txt", "r", encoding="utf-8") as f:
+            current_topic = ""
+            current_paper = ""
+            for line in f:
+                line = line.strip()
+                if line.startswith("--- Topic"):
+                    current_topic = line
+                elif line.startswith("Paper:"):
+                    current_paper = line
+                elif line.startswith("Summary:"):
+                    summary = next(f).strip()
+                    summaries.append((current_topic, current_paper, summary))
+    except FileNotFoundError:
+        pass
+    return render_template('my_summaries.html', summaries=summaries)
+
+@app.route('/uploads/<filename>')
+def uploaded_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 if __name__ == '__main__':
     app.run(debug=True)
